@@ -35,8 +35,10 @@
 #include <fcntl.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <sys/wait.h>
 #include <limits.h>
+#include <time.h>
 #ifdef USE_FLOCK
 #include <sys/file.h>
 #endif
@@ -101,6 +103,7 @@ const char *flow_str[] = {
 #define KEY_STATUS  CKEY('v') /* show program options */
 #define KEY_HELP    CKEY('h') /* show help (same as [C-k]) */
 #define KEY_KEYS    CKEY('k') /* show available command keys */
+#define KEY_TIMESTAMP CKEY('n') /* show timestamp */
 #define KEY_SEND    CKEY('s') /* send file */
 #define KEY_RECEIVE CKEY('r') /* receive file */
 #define KEY_HEX     CKEY('w') /* write hex */
@@ -219,9 +222,10 @@ struct {
     int raise_rts;
     int raise_dtr;
     int quiet;
+    int timestamp;
 } opts = {
     .port = NULL,
-    .baud = 9600,
+    .baud = 115200,
     .flow = FC_NONE,
     .parity = P_NONE,
     .databits = 8,
@@ -248,7 +252,8 @@ struct {
     .lower_dtr = 0,
     .raise_rts = 0,
     .raise_dtr = 0,
-    .quiet = 0
+    .quiet = 0,
+    .timestamp = 0
 };
 
 int sig_exit = 0;
@@ -1040,6 +1045,8 @@ show_keys()
               KEYC(KEY_TOG_RTS));
     fd_printf(STO, "*** [C-%c] : Send break\r\n",
               KEYC(KEY_BREAK));
+    fd_printf(STO, "*** [C-%c] : Toggle display timestamp\r\n",
+              KEYC(KEY_TIMESTAMP));
     fd_printf(STO, "*** [C-%c] : Toggle local echo\r\n",
               KEYC(KEY_LECHO));
     fd_printf(STO, "*** [C-%c] : Write hex\r\n",
@@ -1378,6 +1385,11 @@ do_command (unsigned char c)
         term_break(tty_fd);
         fd_printf(STO, "\r\n*** break sent ***\r\n");
         break;
+    case KEY_TIMESTAMP:
+        opts.timestamp = (opts.timestamp + 1) % 4;
+        fd_printf(STO, "\r\n*** display timestamp, format:%d ***\r\n",
+                  opts.timestamp);
+        break;
     default:
         break;
     }
@@ -1396,6 +1408,56 @@ msec2tv (struct timeval *tv, long ms)
     return tv;
 }
 
+/* print leading timestamp */
+void print_lead_str(int fd)
+{
+    // static long int c_ts = 0;
+    // long int p_ts;
+    struct timeval tv;
+    struct tm lt = {0};
+    char buff[32], buff2[64];
+
+    gettimeofday(&tv, NULL);
+    // /* Calculate the number of microseconds from last print */
+    // if (tv.tv_usec > c_ts)
+    // {
+    //     p_ts = tv.tv_usec - c_ts;
+    // }
+    // else
+    // {
+    //     p_ts = tv.tv_usec + 1000000 - c_ts;
+    // }
+    // c_ts = tv.tv_usec;
+
+    // /* If the interval is less than 1000 microseconds, skip */
+    // if (p_ts < 1000) return;
+
+    localtime_r(&(tv.tv_sec), &lt);
+
+    switch (opts.timestamp) {
+    case 3:
+        strftime(buff, sizeof(buff), "%Y-%m-%d %H:%M:%S", &lt);
+        sprintf(buff2, "%s.%03ld ", buff, tv.tv_usec / 1000);
+        if ( writen_ni(fd, buff2, 24) < 24 )
+            fatal("write timestap failed: %s", strerror(errno));
+        break;
+    case 2:
+        strftime(buff, sizeof(buff), "%H:%M:%S", &lt);
+        sprintf(buff2, "%s.%03ld ", buff, tv.tv_usec / 1000);
+        if ( writen_ni(fd, buff2, 13) < 13 )
+            fatal("write timestap failed: %s", strerror(errno));
+        break;
+    case 1:
+        strftime(buff, sizeof(buff), "%M:%S", &lt);
+        sprintf(buff2, "%s.%03ld ", buff, tv.tv_usec / 1000);
+        if ( writen_ni(fd, buff2, 10) < 10 )
+            fatal("write timestap failed: %s", strerror(errno));
+        break;
+    default:
+        break;
+    }
+}
+
 /* loop-exit reason */
 enum le_reason {
     LE_CMD,
@@ -1404,9 +1466,10 @@ enum le_reason {
     LE_SIGNAL
 };
 
-enum le_reason
-loop(void)
+enum le_reason loop(void)
 {
+    struct timeval tv, *ptv;
+
     enum {
         ST_COMMAND,
         ST_TRANSPARENT
@@ -1422,7 +1485,6 @@ loop(void)
         stdin_closed = 1;
 
     while ( ! sig_exit ) {
-        struct timeval tv, *ptv;
 
         ptv = NULL;
         FD_ZERO(&rdset);
@@ -1639,6 +1701,7 @@ show_usage(char *name)
     printf("  --sto<p>bits 1 | 2\n");
     printf("  --<e>scape <char>\n");
     printf("  --<n>o-escape\n");
+    printf("  --<N>timestamp 0 | 1 | 2 | 3\n");
     printf("  --e<c>ho\n");
     printf("  --no<i>nit\n");
     printf("  --no<r>eset\n");
@@ -1698,6 +1761,7 @@ parse_args(int argc, char *argv[])
         {"emap", required_argument, 0, 'E' },
         {"escape", required_argument, 0, 'e'},
         {"no-escape", no_argument, 0, 'n'},
+        {"timestamp", required_argument, 0, 'N'},
         {"echo", no_argument, 0, 'c'},
         {"noinit", no_argument, 0, 'i'},
         {"noreset", no_argument, 0, 'r'},
@@ -1731,7 +1795,7 @@ parse_args(int argc, char *argv[])
         /* no default error messages printed. */
         opterr = 0;
 
-        c = getopt_long(argc, argv, "hirulcqXnv:s:r:e:f:b:y:d:p:g:t:x:",
+        c = getopt_long(argc, argv, "hirulcqXnN:v:s:r:e:f:b:y:d:p:g:t:x:",
                         longOptions, &optionIndex);
 
         if (c < 0)
@@ -1783,6 +1847,26 @@ parse_args(int argc, char *argv[])
             break;
         case 'n':
             opts.noescape = 1;
+            break;
+        case 'N':
+            switch (optarg[0]) {
+            case '0':
+                opts.timestamp = 0;
+                break;
+            case '1':
+                opts.timestamp = 1;
+                break;
+            case '2':
+                opts.timestamp = 2;
+                break;
+            case '3':
+                opts.timestamp = 3;
+                break;
+            default:
+                fprintf(stderr, "Invalid --timestamp: %c\n", optarg[0]);
+                r = -1;
+                break;
+            }
             break;
         case 'f':
             switch (optarg[0]) {
@@ -1978,6 +2062,7 @@ parse_args(int argc, char *argv[])
     printf("imap is        : "); print_map(opts.imap);
     printf("omap is        : "); print_map(opts.omap);
     printf("emap is        : "); print_map(opts.emap);
+    printf("timestamp fmt  : %d\n", opts.timestamp);
     printf("logfile is     : %s\n", opts.log_filename ? opts.log_filename : "none");
     if ( opts.initstring ) {
         printf("initstring len : %lu bytes\n",

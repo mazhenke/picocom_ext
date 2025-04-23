@@ -31,6 +31,7 @@
 
 /**********************************************************************/
 
+extern void print_lead_str(int fd);
 ssize_t
 writen_ni(int fd, const void *buff, size_t n)
 {
@@ -42,8 +43,12 @@ writen_ni(int fd, const void *buff, size_t n)
     nl = n;
     while (nl > 0) {
         do {
-            nw = write(fd, p, nl);
+            // nw = write(fd, p, nl);
+            nw = write(fd, p, 1);
         } while ( nw < 0 && errno == EINTR );
+        if (*p == '\n') {
+            print_lead_str(fd);
+        }
         if ( nw <= 0 ) break;
         nl -= nw;
         p += nw;

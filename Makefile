@@ -51,7 +51,7 @@ linenoise-1.0/linenoise.o : linenoise-1.0/linenoise.c linenoise-1.0/linenoise.h
 
 OBJS += picocom.o term.o fdio.o split.o custbaud.o termios2.o custbaud_bsd.o
 picocom : $(OBJS)
-	$(LD) $(LDFLAGS) -o $@ $(OBJS) $(LDLIBS)
+	$(LD) $(LDFLAGS) -o $@ $(OBJS) $(LDLIBS) -static
 
 picocom.o : picocom.c term.h fdio.h split.h custbaud.h
 term.o : term.c term.h termios2.h custbaud_bsd.h custbaud.h
